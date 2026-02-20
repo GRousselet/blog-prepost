@@ -1,0 +1,302 @@
+---
+title: "Pre/Post design: the fallacy of comparing difference scores"
+author: "Guillaume Rousselet"
+format: html
+editor: visual
+---
+
+# Dependencies
+
+```{r}
+library(ggplot2)
+library(tibble)
+library(MASS)
+source("./theme_gar.txt")
+```
+
+Pre/post designs are common in medicine, pre-clinical animal research and in psychology: you measure something at baseline, then randomly allocate participants to 2 or more groups, each receiving different interventions, after which you measure the same thing again. In psychology, a pre/post design could be used to look at the impact of different types of meditation techniques on some measure of well-being, or the impact of different types of leaflets on recycling practices. In brain imaging, we could consider the impact of different types of physical exercise on markers of brain activity or structure.
+
+![Pre/post intervention design with two independent groups](./prepost design.jpg)
+
+For the discussion here, assume we measure a continuous or pseudo-continuous variable, like blood pressure, or a score [0-100] from a questionnaire. Here is a classic example from Vickers & Altman (2001) looking at pain scores. I couldn't find the original dataset so I read the values from their Figure 1 using [WebPlotDigitizer](https://automeris.io/WebPlotDigitizer/). The text mentions 52 patients, but when reading values from the graph I got 56 patients, but the overall pattern is similar. The main point is to illustrate results from a standard experimental design. 
+
+# Vickers & Altman 2001
+
+## Load data
+```{r}
+acu <- as.matrix(read.csv("./vickers2001_acupuncture.csv"))
+pla <- as.matrix(read.csv("./vickers2001_placebo.csv"))
+n.acu <- dim(acu)[1]
+n.pla <- dim(pla)[1]
+df <- tibble(pre = c(acu[,1], pla[,1]),
+             post = c(acu[,2], pla[,2]),
+             gp = factor(c(rep("Acupuncture", n.acu), rep("Placebo", n.pla))))
+```
+
+## Analysis of post-treatment scores
+
+Table 1 in the article reports a difference of 17.3 between post-treatment scores. We get something very similar.
+
+```{r}
+m.acu <- mean(df$post[df$gp=="Acupuncture"])
+m.pla <- mean(df$post[df$gp=="Placebo"])
+sprintf("Post-treatment scores:")
+sprintf("Acupuncture = %1.1f",m.acu)
+sprintf("Placebo = %1.1f",m.pla)
+sprintf("Difference = %1.1f",m.acu-m.pla)
+t.test(post ~ gp, data=df)
+```
+
+## Analysis of difference scores
+
+Table 1 in the article reports a difference of 10.8 between change scores. We get something very similar.
+
+```{r}
+m.acu <- mean(df$post[df$gp=="Acupuncture"]) - mean(df$pre[df$gp=="Acupuncture"])
+m.pla <- mean(df$post[df$gp=="Placebo"]) - mean(df$pre[df$gp=="Placebo"])
+sprintf("Difference scores:")
+sprintf("Acupuncture = %1.1f",m.acu)
+sprintf("Placebo = %1.1f",m.pla)
+sprintf("Difference = %1.1f",m.acu-m.pla)
+t.test(post-pre ~ gp, data=df)
+```
+
+## ANCOVA
+
+Table 1 in the article reports this equation:
+$post = 24 + 0.71 * baseline + 12.7 * group$ 
+
+```{r}
+res <- lm(post ~ pre + gp, data = df)
+# to get more info: anova(lm(post ~ pre + gp, data = df))
+summary(res)
+```
+
+I assume their 24 in the article is a typo. The rest is very similar. The sign of the group effect is reversed because `lm()` uses Acupuncture as the reference group, so the effect is for the Placebo group relative to the Acupuncture group.
+
+## Figure with regression lines from ANCOVA
+```{r}
+df <- tibble(pre = c(acu[,1], pla[,1]),
+             post = c(acu[,2], pla[,2]),
+             gp = factor(c(rep("Acupuncture", n.acu), rep("Placebo", n.pla))))
+
+ggplot(df, aes(x = pre, y = post, colour = gp, shape = gp)) + theme_bw() +
+  geom_point(size=2, stroke=1) +
+  # ANCOVA fit for Acupuncture group
+  geom_abline(intercept = coef(res)[1], slope = coef(res)[2], colour="orange") + 
+  # ANCOVA fit for Placebo group
+  geom_abline(intercept = coef(res)[1] + coef(res)[3], slope = coef(res)[2], colour="black") + 
+  scale_shape_manual(values=c(3, 21)) + # 3 -> + 21 -> disc
+  scale_color_manual(values=c('orange','black')) +
+  coord_cartesian(xlim = c(20, 100), ylim = c(20, 100)) +
+  labs(x = "Pretreatment score", y = "Post-treatment score") +
+  theme(axis.title = element_text(size = 16),
+        axis.text = element_text(size =14),
+        legend.position = c(.8, .15), 
+        legend.text = element_text(size=12, face="bold"),
+        legend.title = element_blank(),
+        legend.background = element_rect(fill="white",
+                                  linewidth=0.3, linetype="solid", 
+                                  colour ="black"))
+```
+
+# ANCOVA
+It is very common for data from such pre-post designs to be analysed by looking at change scores: subtract the baseline score from the post-score and compare these differences between the two groups. Just in the last few days I saw several articles in psychology, animal neuroscience and brain imaging using this approach. Don't do it. Instead directly compare the post-intervention scores between the two groups, including the pre-treatment scores as a covariate (Vickers & Altman, 2001; Senn, 2006; Clifton & Clifton, 2019). With this ANCOVA approach, we ask the question: post-intervention, by how much do the groups differ, after adjusting for baseline differences?
+
+In the illustration above, this corresponds to fitting two regression lines described by this equation:
+
+```{r}
+sprintf("post = %1.1f + %1.1f * baseline %1.1f * group", coef(res)[1], coef(res)[2], coef(res)[3])
+```
+
+There are several reasons why the difference score approach is problematic ([Harrell, 2017](https://www.fharrell.com/post/errmed/#change)). A broad issue is the linearity assumption, which is very common in many fields, particularly in psychology and neuroscience. For instance, a 50 ms reaction time difference could be huge if we are dealing with fast responses in a simple perception task, but it could be small if we are dealing with slow responses in a complex decision task. The same logic applies to participants with differences in baseline measurements: a 50 ms difference could be impressive in fast participants, but not so much in slow participants. It gets worse because of floor and ceiling effects. So, in general, difference scores are not necessarily comparable. A deeper issue is the assumption of a linear mapping between our measurements and some more abstract quantity we are trying to estimate: for instance using the BOLD signal to estimate brain activity, percent correct to estimate memory representation or reaction times to estimate processing speed. There is no reason to assume linear mappings, yet this is the norm (Wagenmakers et al. 2012; Kellen et al. 2021).
+
+Another important reason to avoid inferences on change scores in the context of pre/post designs is purely mathematical: change scores are necessarily correlated with baseline scores (Clifton & Clifton, 2019). As a consequence, imbalance between groups at baseline can lead to spurious effects. Let's look at an example in which the data are sampled from a bivariate normal population with a correlation of 0.6 between baseline and post scores. Importantly, the marginal means are identical, such that there is no intervention effect. 
+
+# Change score as a function of baseline score
+
+## Generate change score data
+
+Baseline and post scores are correlated multivariate normal data.
+
+```{r}
+set.seed(21)
+n  <- 200 # Number of participants
+# Means and SDs for baseline and post
+mu  <- c(50, 50)  # marginal means
+sd.pre <- 10 # SD baseline
+sd.post <- 10 # SD post
+r <- 0.6 # correlation between baseline & post
+
+# Covariance matrix
+Sigma <- matrix(c(sd.pre^2, r*sd.pre*sd.post, r*sd.pre*sd.post,  sd.post^2), nrow = 2, byrow = TRUE)
+
+# Simulate baseline (Y0) and post (Y1)
+res <- mvrnorm(n, mu = mu, Sigma = Sigma)
+dat.pre <- res[,1]
+dat.post <- res[,2]
+dat.diff <- dat.post - dat.pre
+dat.mean <- (dat.post + dat.pre) / 2
+
+df <- tibble(pre = dat.pre,
+             post = dat.post,
+             diff = dat.diff,
+             mean = dat.mean)
+```
+
+## Plot post score as function of baseline score
+
+By construction, baseline and post scores are correlated. Here is the sample correlation: 
+
+```{r}
+cat("Correlation(baseline, post) =", round(cor(dat.pre, dat.post),digits=2), "\n")
+```
+
+```{r}
+ggplot(df, aes(x=pre, y=post)) + theme_gar +
+  geom_point(shape = 21, fill = "white", colour = "black", size = 2) +
+  geom_abline(slope = 1, intercept = 0, linetype = "dashed") +
+  labs(x = "Baseline score",
+       y = "Post intervention score",
+       title = "Post / baseline")
+```
+
+## Plot change score as function of baseline score
+
+No matter the correlation between pre and post scores, there is always a correlation between baseline scores and the difference scores, even though in the data we created, there is no treatment effect (Clifton & Clifton, 2019).
+
+```{r}
+cat("Correlation(baseline, difference) =", round(cor(dat.pre, dat.diff),digits=2), "\n")
+```
+
+```{r, message=FALSE}
+ggplot(df, aes(x=pre, y=diff)) + theme_gar +
+  geom_point(shape = 21, fill = "white", colour = "black", size = 2) +
+  geom_abline(slope = 0, intercept = 0, linetype = "dashed") +
+  geom_smooth(se=FALSE, colour="black") + 
+  labs(x = "Baseline score",
+       y = "Difference score (post - baseline)",
+       title = "Difference / baseline")
+```
+
+Why is that correlation important? This figure shows the main point of this blog post. Baseline imbalance can lead to spurious group differences in difference scores, which will tend to be more problematic when groups have relatively small sample sizes. This is a form of regression to the mean: high baseline scores tend to be associated with lower post scores, whereas low baseline scores tend to be associated with higher post scores. And the situation gets worse when baseline and post measurements differ in variance. Fortunately, the ANCOVA naturally accounts for differences in baseline scores.
+
+## Bland-Altman plot eliminates the trend
+
+The lack of trend is due to the lack of correlation between the change score and the average score. Importantly, this is only true if the pre and post measurements have the same variance.
+
+```{r, message=FALSE}
+ggplot(df, aes(x=mean, y=diff)) + theme_gar +
+  geom_point(shape = 21, fill = "white", colour = "black", size = 2) +
+  geom_abline(slope = 0, intercept = 0, linetype = "dashed") +
+  geom_smooth(se=FALSE, colour="black") + 
+  labs(x = "Mean score: (post + baseline) / 2",
+       y = "Difference score: post - baseline",
+       title = "Difference / mean")
+```
+
+## Trend is back if variances differ
+
+```{r, message=FALSE}
+set.seed(21)
+n  <- 200 # Number of participants
+# Means and SDs for baseline and post
+mu  <- c(50, 50)  # marginal means
+sd.pre <- 20 # SD baseline
+sd.post <- 10 # SD post
+r <- 0.6 # correlation between baseline & post
+
+# Covariance matrix
+Sigma <- matrix(c(sd.pre^2, r*sd.pre*sd.post, r*sd.pre*sd.post,  sd.post^2), nrow = 2, byrow = TRUE)
+
+# Simulate baseline (Y0) and post (Y1)
+res <- mvrnorm(n, mu = mu, Sigma = Sigma)
+dat.pre <- res[,1]
+dat.post <- res[,2]
+dat.diff <- dat.post - dat.pre
+dat.mean <- (dat.post + dat.pre) / 2
+
+df <- tibble(pre = dat.pre,
+             post = dat.post,
+             diff = dat.diff,
+             mean = dat.mean)
+
+ggplot(df, aes(x=mean, y=diff)) + theme_gar +
+  geom_point(shape = 21, fill = "white", colour = "black", size = 2) +
+  geom_abline(slope = 0, intercept = 0, linetype = "dashed") +
+  geom_smooth(se=FALSE, colour="black") + 
+  labs(x = "Mean score: (post + baseline) / 2",
+       y = "Difference score: post - baseline",
+       title = "Difference / mean")
+```
+
+## Make plot of difference as a function of baseline again
+
+We get a very tight negative association between baseline and difference scores.
+
+```{r, message=FALSE}
+ggplot(df, aes(x=pre, y=diff)) + theme_gar +
+  geom_point(shape = 21, fill = "white", colour = "black", size = 2) +
+  geom_abline(slope = 0, intercept = 0, linetype = "dashed") +
+  geom_smooth(se=FALSE, colour="black") + 
+  labs(x = "Baseline score",
+       y = "Difference score (post - baseline)",
+       title = "Difference / baseline")
+```
+
+# ANCOVA and change score analysis
+
+Randomly allocate participants to the control and treatment groups, such that we know there is no group difference.
+
+## Change score analysis
+
+```{r}
+group <- factor(sample(c("Control", "Treatment"), n, replace=TRUE))
+
+# Change-score model = incorrect approach
+summary(lm(dat.diff ~ group))
+# t.test(dat.diff ~ group)
+```
+
+## ANCOVA
+
+```{r}
+## ANCOVA model = correct approach
+model_ancova <- lm(dat.post ~ dat.pre + group)
+summary(model_ancova)
+```
+
+Of course it is more complicated than that, because the standard ANCOVA makes very strong assumptions: the trends in the two groups are linear and both groups share the same slope. Fortunately, we can relax the assumption of equal slopes by including an interaction between the slope and the group (Wan, 2020). We can also relax the linearity assumption by using non-parametric models that fit smooth curves to the data (Mair & Wilcox, 2019; James et al. 2021). 
+
+But what about testing for baseline imbalance? Can we not do a t-test on baseline scores to demonstrate that they are comparable between groups? This approach is inappropriate and misguided for several reasons (Sassenhagen & Alday, 2016; Vanhove, 2014). First, such a test is superfluous because we already know the answer:  participants were randomly assigned to the two groups; any group differences are due to random sampling. Second, inferential statistics, like t-tests, are not about the sample at hand, they are about the populations we sampled from. Third, claiming that two populations do not differ based on *P*\>0.05 is a statistical fallacy. In the frequentist realm, demonstrating population equivalence requires equivalence testing (Campbell & Gustafson, 2024; Riesthuis, 2024). Fourth, using a t-test to decide on how to analyse the data leads to conditional sampling distributions that would need to be simulated to derive *P* values--good luck with that (Rousselet, 2025; Vanhove, 2014). Fifth, using an ANCOVA by default is more powerful than doing an ANCOVA conditional on a baseline check (Vanhove, 2014).
+
+# References
+
+Campbell, H., & Gustafson, P. (2024). The Bayes factor, HDI-ROPE, and frequentist equivalence tests can all be reverse engineered—Almost exactly—From one another: Reply to Linde et al. (2021). Psychological Methods, 29(3), 613–623. https://doi.org/10.1037/met0000507
+
+Clifton, L., & Clifton, D. A. (2019). The correlation between baseline score and post-intervention score, and its implications for statistical analysis. Trials, 20(1), 43. https://doi.org/10.1186/s13063-018-3108-3
+
+Harrell, F. (2017, April 8). Statistical Errors in the Medical Literature. Statistical Thinking. https://www.fharrell.com/post/errmed/#change
+
+James, G., Witten, D., Hastie, T., & Tibshirani, R. (2021) An Introduction to Statistical Learning: With Applications in R, Springer Texts in Statistics. Springer US, New York, NY.
+
+Kellen, D., Davis-Stober, C. P., Dunn, J. C., & Kalish, M. L. (2021). The Problem of Coordination and the Pursuit of Structural Constraints in Psychology. Perspectives on Psychological Science, 16(4), 767-778. https://doi.org/10.1177/1745691620974771
+
+Mair, P., & Wilcox, R. (2019). Robust statistical methods in R using the WRS2 package. Behavior Research Methods. https://doi.org/10.3758/s13428-019-01246-w
+
+Riesthuis, P. (2024). Simulation-Based Power Analyses for the Smallest Effect Size of Interest: A Confidence-Interval Approach for Minimum-Effect and Equivalence Testing. Advances in Methods and Practices in Psychological Science, 7(2), 25152459241240722. https://doi.org/10.1177/25152459241240722
+
+Rousselet, G. A. (2025). Using Simulations to Explore Sampling Distributions: An Antidote to Hasty and Extravagant Inferences. eNeuro, 12(10). https://doi.org/10.1523/ENEURO.0339-25.2025
+
+Sassenhagen, J., & Alday, P. M. (2016). A common misapplication of statistical inference: Nuisance control with null-hypothesis significance tests. Brain and Language, 162, 42–45. https://doi.org/10.1016/j.bandl.2016.08.001
+
+Senn, S. (2006). Change from baseline and analysis of covariance revisited. Statistics in Medicine, 25(24), 4334–4344. https://doi.org/10.1002/sim.2682
+
+Vanhove, J. (2014, September 26). Silly significance tests: Balance tests – Jan Vanhove:: Blog. https://janhove.github.io/posts/2014-09-26-balance-tests/
+
+Vickers, A. J., & Altman, D. G. (2001). Analysing controlled trials with baseline and follow up measurements. BMJ, 323(7321), 1123–1124. https://doi.org/10.1136/bmj.323.7321.1123
+
+Wagenmakers EJ, Krypotos AM, Criss AH, Iverson G. On the interpretation of removable interactions: a survey of the field 33 years after Loftus. Mem Cognit. 2012 Feb;40(2):145-60. https://www.ncbi.nlm.nih.gov/pmc/articles/PMC3267935/
+
+Wan, F. (2020). Analyzing pre-post designs using the analysis of covariance models with and without the interaction term in a heterogeneous study population. Statistical Methods in Medical Research, 29(1), 189–204. https://doi.org/10.1177/0962280219827971
+
